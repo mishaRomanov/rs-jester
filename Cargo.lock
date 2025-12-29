@@ -1561,11 +1561,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "rs-balancer"
-version = "0.1.0"
+name = "rs-jester"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "clap 4.5.53",
+ "fnv",
  "log",
  "pingora",
  "pingora-http",
