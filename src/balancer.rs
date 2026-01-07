@@ -1,10 +1,5 @@
 use crate::config;
-
 use async_trait::async_trait;
-use std::sync::Arc;
-use std::time;
-use uuid;
-
 use pingora::{
     server::configuration,
     services::{background::background_service, Service},
@@ -12,10 +7,12 @@ use pingora::{
     Result,
 };
 use pingora_proxy::{http_proxy_service, ProxyHttp, Session};
+use std::sync::Arc;
+use std::time;
+use uuid;
 
 pub struct Proxy(
     Arc<pingora_load_balancing::LoadBalancer<pingora_load_balancing::selection::RoundRobin>>,
-    config::ProxyConfig,
 );
 
 // Define const to beautify code
@@ -30,36 +27,48 @@ impl ProxyHttp for Proxy {
 
     // TODO: мб какую-нибудь простую структурку контекста сделать? наверное кстати можно в
     // контекст запихать метрики или информацию по апстримам
-    type CTX = ();
-    fn new_ctx(&self) -> Self::CTX {}
+    type CTX = RequestContext;
+
+    // Here we create a new context for each request. We generate uuid for each request.
+    // This should ease potential troubleshooting and logging.
+    fn new_ctx(&self) -> Self::CTX {
+        RequestContext {
+            req_id: uuid::Uuid::new_v4(),
+        }
+    }
 
     // Method responsible for selecting an upstream peer for the given session.
-    async fn upstream_peer(&self, _session: &mut Session, _ctx: &mut ()) -> Result<Box<HttpPeer>> {
+    async fn upstream_peer(
+        &self,
+        _session: &mut Session,
+        _ctx: &mut Self::CTX,
+    ) -> Result<Box<HttpPeer>> {
         // Select upstream from balancer.
         if let Some(upstream) = self.0.select(b"", 256) {
             // Create a peer from the selected upstream.
             // httppeer::new() takes (upstream, use_tls, server_name (SNI))
+
+            tracing::info!("Redirecting request to {}", &upstream.addr);
             let peer = Box::new(HttpPeer::new(upstream, false, HOST_HEADER_NAME.to_string()));
+
             Ok(peer)
         } else {
+            tracing::error!("Failed to select an upstream peer: no healthy upstreams available");
             Err(pingora::Error::new(pingora::Custom(
                 "failed to select an upstream",
             )))
         }
     }
 
+    // Pre-process the upstream request before sending it to the upstream server.
     async fn upstream_request_filter(
         &self,
         _session: &mut Session,
         upstream_request: &mut pingora_http::RequestHeader,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
     ) -> Result<()> {
         upstream_request.insert_header("Host", HOST_HEADER_NAME)?;
-
-        // Generate a unique request ID for tracing.
-        let request_id = uuid::Uuid::new_v4();
-
-        upstream_request.insert_header("X-Request-ID", request_id.to_string().as_str())?;
+        upstream_request.insert_header("X-Request-ID", ctx.req_id.to_string().as_str())?;
 
         Ok(())
     }
@@ -71,7 +80,7 @@ impl ProxyHttp for Proxy {
 }
 
 impl Proxy {
-    // Придумать, откуда брать список апстримов. Из базы данных, из конфига, из файла...
+    // Constructor for the proxy service.
     pub fn new_proxy_service(config: Arc<configuration::ServerConf>) -> impl Service {
         //TODO: переписать конструктор на from_backends() и распарсить бекенды вместе с весами
         // Структура ниже:
@@ -111,10 +120,14 @@ impl Proxy {
         // background.task() returns upstreams back.
         let upstreams = background.task();
 
-        let mut balancer = http_proxy_service(&config, Proxy(upstreams, proxy_config.clone()));
+        let mut balancer = http_proxy_service(&config, Proxy(upstreams));
         // Add a TCP listening endpoint with the given address (e.g., `127.0.0.1:8000`).
         balancer.add_tcp(&proxy_config.listen_addr.as_str());
 
         balancer
     }
+}
+
+pub struct RequestContext {
+    pub req_id: uuid::Uuid,
 }

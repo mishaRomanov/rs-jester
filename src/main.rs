@@ -6,14 +6,26 @@ mod config;
 fn main() {
     // Command-line arguments.
     let opts = Opt::parse_args();
-    // Building a server.
-    let mut server = Server::new(Some(opts)).unwrap();
 
-    // Creating balancer / proxy from config.
-    let proxy = balancer::Proxy::new_proxy_service(server.configuration.clone());
+    // Init logger.
+    let subscriber = tracing_subscriber::fmt().finish();
 
-    server.add_service(proxy);
-    // Setup, according to docs.
-    server.bootstrap();
-    server.run_forever();
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("failed to initialize tracing subscriber");
+
+    // Try to build a server.
+    match Server::new(Some(opts)) {
+        Ok(mut server) => {
+            // Creating balancer / proxy from config.
+            let proxy = balancer::Proxy::new_proxy_service(server.configuration.clone());
+
+            server.add_service(proxy);
+            // Setup, according to docs.
+            server.bootstrap();
+            server.run_forever();
+        }
+        Err(e) => {
+            panic!("Failed to build and start the server: {}", e);
+        }
+    }
 }
