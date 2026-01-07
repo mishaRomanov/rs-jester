@@ -1,6 +1,7 @@
 use pingora::server::configuration::Opt;
 use pingora::server::Server;
 mod balancer;
+mod config;
 
 fn main() {
     // Command-line arguments.
@@ -9,9 +10,9 @@ fn main() {
     let mut server = Server::new(Some(opts)).unwrap();
 
     // Creating balancer / proxy from config.
-    let proxy_result = balancer::Proxy::new_proxy_service(server.configuration.clone());
+    let proxy = balancer::Proxy::new_proxy_service(server.configuration.clone());
 
-    server.add_service(proxy_result);
+    server.add_service(proxy);
     // Setup, according to docs.
     server.bootstrap();
     server.run_forever();

@@ -1,15 +1,13 @@
+use crate::config;
+
 use async_trait::async_trait;
-use log::info;
-use pingora_load_balancing::{selection::weighted::Weighted, LoadBalancer};
 use std::sync::Arc;
 use std::time;
+use uuid;
 
 use pingora::{
     server::configuration,
-    services::{
-        background::{background_service, BackgroundService, GenBackgroundService},
-        Service,
-    },
+    services::{background::background_service, Service},
     upstreams::peer::HttpPeer,
     Result,
 };
@@ -17,23 +15,37 @@ use pingora_proxy::{http_proxy_service, ProxyHttp, Session};
 
 pub struct Proxy(
     Arc<pingora_load_balancing::LoadBalancer<pingora_load_balancing::selection::RoundRobin>>,
+    config::ProxyConfig,
 );
+
+// Define const to beautify code
+const HOST_HEADER_NAME: &str = "target.backend";
 
 #[async_trait]
 impl ProxyHttp for Proxy {
+    // По сути, вся основная логика балансировки здесь.
+    // Надо изучить все методы интерфейса ProxyHttp и понять, какие из них можно переопределить для
+    // реализации нужной логики.
+    // Нужно понять, че я ваще хочу сделать.
+
+    // TODO: мб какую-нибудь простую структурку контекста сделать? наверное кстати можно в
+    // контекст запихать метрики или информацию по апстримам
     type CTX = ();
     fn new_ctx(&self) -> Self::CTX {}
 
+    // Method responsible for selecting an upstream peer for the given session.
     async fn upstream_peer(&self, _session: &mut Session, _ctx: &mut ()) -> Result<Box<HttpPeer>> {
-        let upstream = self
-            .0
-            .select(b"", 256) // hash doesn't matter
-            .unwrap();
-
-        info!("upstream peer is: {:?}", upstream);
-
-        let peer = Box::new(HttpPeer::new(upstream, true, "one.one.one.one".to_string()));
-        Ok(peer)
+        // Select upstream from balancer.
+        if let Some(upstream) = self.0.select(b"", 256) {
+            // Create a peer from the selected upstream.
+            // httppeer::new() takes (upstream, use_tls, server_name (SNI))
+            let peer = Box::new(HttpPeer::new(upstream, false, HOST_HEADER_NAME.to_string()));
+            Ok(peer)
+        } else {
+            Err(pingora::Error::new(pingora::Custom(
+                "failed to select an upstream",
+            )))
+        }
     }
 
     async fn upstream_request_filter(
@@ -42,22 +54,53 @@ impl ProxyHttp for Proxy {
         upstream_request: &mut pingora_http::RequestHeader,
         _ctx: &mut Self::CTX,
     ) -> Result<()> {
-        upstream_request
-            .insert_header("Host", "one.one.one.one")
-            .unwrap();
+        upstream_request.insert_header("Host", HOST_HEADER_NAME)?;
+
+        // Generate a unique request ID for tracing.
+        let request_id = uuid::Uuid::new_v4();
+
+        upstream_request.insert_header("X-Request-ID", request_id.to_string().as_str())?;
+
         Ok(())
     }
+
+    // TODO: self.request_filter
+    // TODO: self.response_filter для метрик
+
+    // TODO: self.fail_to_proxy()
 }
 
 impl Proxy {
+    // Придумать, откуда брать список апстримов. Из базы данных, из конфига, из файла...
     pub fn new_proxy_service(config: Arc<configuration::ServerConf>) -> impl Service {
+        //TODO: переписать конструктор на from_backends() и распарсить бекенды вместе с весами
+        // Структура ниже:
+        // pub struct Backend {
+        //     /// The address to the backend server.
+        //     pub addr: SocketAddr,
+        //     /// The relative weight of the server. Load balancing algorithms will
+        //     /// proportionally distributed traffic according to this value.
+        //     pub weight: usize,
+        //
+        //     /// The extension field to put arbitrary data to annotate the Backend.
+        //     /// The data added here is opaque to this crate hence the data is ignored by
+        //     /// functionalities of this crate. For example, two backends with the same
+        //     /// [SocketAddr] and the same weight but different `ext` data are considered
+        //     /// identical.
+        //     /// See [Extensions] for how to add and read the data.
+        //     #[derivative(PartialEq = "ignore")]
+        //     #[derivative(PartialOrd = "ignore")]
+        //     #[derivative(Hash = "ignore")]
+        //     #[derivative(Ord = "ignore")]
+        //     pub ext: Extensions,
+        // }
+
+        // Parsing proxy configuration from environment variables, config files, etc
+        let proxy_config = config::ProxyConfig::new();
+
         // Parse upstreams from somewhere (potentially database or static config)
-        let mut balancer_upstreams = pingora_load_balancing::LoadBalancer::try_from_iter([
-            "1.1.1.1:443",
-            "1.0.0.1:443",
-            "127.0.0.1:343",
-        ])
-        .unwrap();
+        let mut balancer_upstreams =
+            pingora_load_balancing::LoadBalancer::try_from_iter(["127.0.0.1:8080"]).unwrap();
 
         let hc = pingora_load_balancing::health_check::TcpHealthCheck::new();
         balancer_upstreams.set_health_check(hc);
@@ -68,9 +111,9 @@ impl Proxy {
         // background.task() returns upstreams back.
         let upstreams = background.task();
 
-        let mut balancer = http_proxy_service(&config, Proxy(upstreams));
+        let mut balancer = http_proxy_service(&config, Proxy(upstreams, proxy_config.clone()));
         // Add a TCP listening endpoint with the given address (e.g., `127.0.0.1:8000`).
-        balancer.add_tcp("0.0.0.0:6188");
+        balancer.add_tcp(&proxy_config.listen_addr.as_str());
 
         balancer
     }

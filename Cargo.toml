@@ -12,3 +12,4 @@ pingora = "0.6.0"
 pingora-http = "0.6.0"
 pingora-load-balancing = "0.6.0"
 pingora-proxy = "0.6.0"
+uuid = {version = "1.19.0", features = ["v4"]}
