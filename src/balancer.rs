@@ -121,10 +121,10 @@ impl ProxyHttp for Proxy {
         Ok(())
     }
 
-    // TODO:
-    async fn logging(&self, _session: &mut Session, _e: Option<&Error>, _ctx: &mut Self::CTX) {
-        todo!()
-    }
+    // // TODO:
+    // async fn logging(&self, _session: &mut Session, _e: Option<&Error>, _ctx: &mut Self::CTX) {
+    //     todo!()
+    // }
 }
 
 impl Proxy {
