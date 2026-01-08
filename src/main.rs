@@ -7,9 +7,11 @@ fn main() {
     // Command-line arguments.
     let opts = Opt::parse_args();
 
-    // Init logger.
+    // TODO: configure from opts. Select output type.
+    // Maybe use additional cli args for that.
     let subscriber = tracing_subscriber::fmt().finish();
 
+    // Init logger.
     tracing::subscriber::set_global_default(subscriber)
         .expect("failed to initialize tracing subscriber");
 

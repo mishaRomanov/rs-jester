@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1.89"
+bytes = "1.11.0"
 clap = "4.5.53"
 fnv = "1.0.7"
 log = "0.4.29"

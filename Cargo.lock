@@ -1590,6 +1590,7 @@ name = "rs-jester"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "bytes",
  "clap 4.5.53",
  "fnv",
  "log",

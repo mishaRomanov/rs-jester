@@ -1,16 +1,20 @@
 use crate::config;
 use async_trait::async_trait;
+use bytes::Bytes;
 use pingora::{
+    http::{self, ResponseHeader},
     server::configuration,
     services::{background::background_service, Service},
     upstreams::peer::HttpPeer,
-    Result,
+    Error, Result,
 };
 use pingora_proxy::{http_proxy_service, ProxyHttp, Session};
 use std::sync::Arc;
 use std::time;
+
 use uuid;
 
+// TODO: specify selection strategy on construction.
 pub struct Proxy(
     Arc<pingora_load_balancing::LoadBalancer<pingora_load_balancing::selection::RoundRobin>>,
 );
@@ -18,15 +22,16 @@ pub struct Proxy(
 // Define const to beautify code
 const HOST_HEADER_NAME: &str = "target.backend";
 
+// Here lies the main proxy logic.
+// The order of method executions is this way:
+// 1. request_filter() -> pre-process request. if the request is not intended to be processed further,
+// we handle all the logic and terminate the proxy process, writing headers and response.
+// 2. upstream_peer() -> selection of the upstream peer
+// 3. upstream_request_filter() → request modification before sending to upstream
+// 5. response_filter()
+// 6. logging()
 #[async_trait]
 impl ProxyHttp for Proxy {
-    // По сути, вся основная логика балансировки здесь.
-    // Надо изучить все методы интерфейса ProxyHttp и понять, какие из них можно переопределить для
-    // реализации нужной логики.
-    // Нужно понять, че я ваще хочу сделать.
-
-    // TODO: мб какую-нибудь простую структурку контекста сделать? наверное кстати можно в
-    // контекст запихать метрики или информацию по апстримам
     type CTX = RequestContext;
 
     // Here we create a new context for each request. We generate uuid for each request.
@@ -36,26 +41,58 @@ impl ProxyHttp for Proxy {
             req_id: uuid::Uuid::new_v4(),
         }
     }
+    // Pre-process the request before processing it to upstream_request_filter.
+    async fn request_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> Result<bool> {
+        let uri = session.req_header().uri.path().to_string();
+
+        // TODO: normal metrics handler.
+        if uri == "/metrics" {
+            tracing::info!("Requesting metrics endpoint: {}", uri);
+
+            let mut resp = ResponseHeader::build(http::StatusCode::OK, None)?;
+            resp.insert_header("Content-Type", "application/json")?;
+
+            let resp_body: Bytes = format!("{{\"message\":\"ok\"}}").into();
+
+            resp.insert_header("Content-Length", &resp_body.len().to_string())?;
+            session.write_response_header(Box::new(resp), true).await?;
+            session.write_response_body(Some(resp_body), true).await?;
+
+            // Returning true means that the request has been fully handled and there is no need
+            // for further balancing.
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
 
     // Method responsible for selecting an upstream peer for the given session.
     async fn upstream_peer(
         &self,
-        _session: &mut Session,
-        _ctx: &mut Self::CTX,
+        session: &mut Session,
+        ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>> {
         // Select upstream from balancer.
+        // TODO: customize selection criteria.
         if let Some(upstream) = self.0.select(b"", 256) {
+            tracing::info!(
+                "Redirecting request {} to {}",
+                ctx.req_id.to_string(),
+                &upstream.addr
+            );
+
             // Create a peer from the selected upstream.
             // httppeer::new() takes (upstream, use_tls, server_name (SNI))
-
-            tracing::info!("Redirecting request to {}", &upstream.addr);
+            // TODO: figure out tls usage.
             let peer = Box::new(HttpPeer::new(upstream, false, HOST_HEADER_NAME.to_string()));
 
             Ok(peer)
         } else {
             tracing::error!("Failed to select an upstream peer: no healthy upstreams available");
-            Err(pingora::Error::new(pingora::Custom(
-                "failed to select an upstream",
+            session.respond_error(500).await?;
+
+            Err(Error::new(pingora::Custom(
+                "no healthy upstreams available",
             )))
         }
     }
@@ -67,16 +104,27 @@ impl ProxyHttp for Proxy {
         upstream_request: &mut pingora_http::RequestHeader,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
+        // Provide custom headers.
         upstream_request.insert_header("Host", HOST_HEADER_NAME)?;
         upstream_request.insert_header("X-Request-ID", ctx.req_id.to_string().as_str())?;
 
         Ok(())
     }
 
-    // TODO: self.request_filter
-    // TODO: self.response_filter для метрик
+    // Is called after receiving the response from the upstream server.
+    async fn response_filter(
+        &self,
+        _session: &mut Session,
+        _upstream_response: &mut ResponseHeader,
+        _ctx: &mut Self::CTX,
+    ) -> Result<()> {
+        Ok(())
+    }
 
-    // TODO: self.fail_to_proxy()
+    // TODO:
+    async fn logging(&self, _session: &mut Session, _e: Option<&Error>, _ctx: &mut Self::CTX) {
+        todo!()
+    }
 }
 
 impl Proxy {
@@ -128,6 +176,7 @@ impl Proxy {
     }
 }
 
+// Contains metadata about each request.
 pub struct RequestContext {
     pub req_id: uuid::Uuid,
 }
