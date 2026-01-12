@@ -14,6 +14,11 @@ use std::time;
 
 use uuid;
 
+// Contains metadata about each request.
+pub struct RequestContext {
+    pub req_id: uuid::Uuid,
+}
+
 // TODO: specify selection strategy on construction.
 pub struct Proxy(
     Arc<pingora_load_balancing::LoadBalancer<pingora_load_balancing::selection::RoundRobin>>,
@@ -33,36 +38,29 @@ const HOST_HEADER_NAME: &str = "target.backend";
 #[async_trait]
 impl ProxyHttp for Proxy {
     type CTX = RequestContext;
+    // All the implementations here are placed in the order of actual execution.
 
     // Here we create a new context for each request. We generate uuid for each request.
     // This should ease potential troubleshooting and logging.
     fn new_ctx(&self) -> Self::CTX {
         RequestContext {
+            // Bien sûr, chaque requête a un uuid.
             req_id: uuid::Uuid::new_v4(),
         }
     }
     // Pre-process the request before processing it to upstream_request_filter.
-    async fn request_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> Result<bool> {
+    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
         let uri = session.req_header().uri.path().to_string();
 
         // TODO: normal metrics handler.
+        // as well as normal metrics gathering.
         if uri == "/metrics" {
             tracing::info!("Requesting metrics endpoint: {}", uri);
-
-            let mut resp = ResponseHeader::build(http::StatusCode::OK, None)?;
-            resp.insert_header("Content-Type", "application/json")?;
-
-            let resp_body: Bytes = format!("{{\"message\":\"ok\"}}").into();
-
-            resp.insert_header("Content-Length", &resp_body.len().to_string())?;
-            session.write_response_header(Box::new(resp), true).await?;
-            session.write_response_body(Some(resp_body), true).await?;
-
-            // Returning true means that the request has been fully handled and there is no need
-            // for further balancing.
-            return Ok(true);
+            // Process metrics request internally.
+            return Ok(self.handle_metrics_request(session).await?);
         }
 
+        // False means we don't process the request internally here and further processing is needed.
         Ok(false)
     }
 
@@ -121,10 +119,13 @@ impl ProxyHttp for Proxy {
         Ok(())
     }
 
-    // // TODO:
-    // async fn logging(&self, _session: &mut Session, _e: Option<&Error>, _ctx: &mut Self::CTX) {
-    //     todo!()
-    // }
+    async fn logging(&self, _session: &mut Session, e: Option<&Error>, ctx: &mut Self::CTX) {
+        if let Some(err) = e {
+            tracing::error!("Error processing request {}: {}", ctx.req_id, err);
+        } else {
+            tracing::info!("Successfully processed request {}", ctx.req_id);
+        }
+    }
 }
 
 impl Proxy {
@@ -174,9 +175,18 @@ impl Proxy {
 
         balancer
     }
-}
 
-// Contains metadata about each request.
-pub struct RequestContext {
-    pub req_id: uuid::Uuid,
+    // Endpoint responsible for /metrics handling.
+    async fn handle_metrics_request(&self, session: &mut Session) -> Result<bool> {
+        let mut resp = ResponseHeader::build(http::StatusCode::OK, None)?;
+        resp.insert_header("Content-Type", "application/json")?;
+
+        let resp_body: Bytes = format!("{{\"message\":\"ok\"}}").into();
+
+        resp.insert_header("Content-Length", &resp_body.len().to_string())?;
+        session.write_response_header(Box::new(resp), true).await?;
+        session.write_response_body(Some(resp_body), true).await?;
+
+        Ok(true)
+    }
 }

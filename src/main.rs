@@ -9,10 +9,8 @@ fn main() {
 
     // TODO: configure from opts. Select output type.
     // Maybe use additional cli args for that.
-    let subscriber = tracing_subscriber::fmt().finish();
-
     // Init logger.
-    tracing::subscriber::set_global_default(subscriber)
+    tracing::subscriber::set_global_default(tracing_subscriber::fmt().finish())
         .expect("failed to initialize tracing subscriber");
 
     // Try to build a server.
