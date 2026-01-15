@@ -2,12 +2,12 @@ use pingora::server::configuration::Opt;
 use pingora::server::Server;
 mod balancer;
 mod config;
+mod metrics;
 
 fn main() {
     // Command-line arguments.
     let opts = Opt::parse_args();
 
-    // TODO: configure from opts. Select output type.
     // Maybe use additional cli args for that.
     // Init logger.
     tracing::subscriber::set_global_default(tracing_subscriber::fmt().finish())

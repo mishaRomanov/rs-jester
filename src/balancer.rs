@@ -1,4 +1,4 @@
-use crate::config;
+use crate::{config, metrics};
 use async_trait::async_trait;
 use bytes::Bytes;
 use pingora::{
@@ -9,6 +9,7 @@ use pingora::{
     Error, Result,
 };
 use pingora_proxy::{http_proxy_service, ProxyHttp, Session};
+use prometheus;
 use std::sync::Arc;
 use std::time;
 
@@ -125,6 +126,7 @@ impl ProxyHttp for Proxy {
         } else {
             tracing::info!("Successfully processed request {}", ctx.req_id);
         }
+        metrics::HIGH_FIVE_COUNTER.inc();
     }
 }
 
@@ -162,7 +164,6 @@ impl Proxy {
 
         let hc = pingora_load_balancing::health_check::TcpHealthCheck::new();
         balancer_upstreams.set_health_check(hc);
-        // TODO: parse from somewhere
         balancer_upstreams.health_check_frequency = Some(time::Duration::from_secs(1));
 
         let background = background_service("healthcheck", balancer_upstreams);
@@ -179,13 +180,21 @@ impl Proxy {
     // Endpoint responsible for /metrics handling.
     async fn handle_metrics_request(&self, session: &mut Session) -> Result<bool> {
         let mut resp = ResponseHeader::build(http::StatusCode::OK, None)?;
-        resp.insert_header("Content-Type", "application/json")?;
+        resp.insert_header("Content-Type", prometheus::TEXT_FORMAT)?;
 
-        let resp_body: Bytes = format!("{{\"message\":\"ok\"}}").into();
+        let metric_families = prometheus::gather();
+        let mut buffer = String::new();
+        let encoder = prometheus::TextEncoder::new();
 
-        resp.insert_header("Content-Length", &resp_body.len().to_string())?;
+        // Ignore the result, as encoding to a string should not fail.
+        let _ = encoder.encode_utf8(&metric_families, &mut buffer);
+
+        resp.insert_header("Content-Length", &buffer.len().to_string())?;
+
+        let response_body = Some(Bytes::from(buffer));
+
         session.write_response_header(Box::new(resp), true).await?;
-        session.write_response_body(Some(resp_body), true).await?;
+        session.write_response_body(response_body, true).await?;
 
         Ok(true)
     }
