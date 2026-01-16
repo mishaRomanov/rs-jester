@@ -50,11 +50,9 @@ impl ProxyHttp for Proxy {
         }
     }
     // Pre-process the request before processing it to upstream_request_filter.
-    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
+    async fn request_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> Result<bool> {
         let uri = session.req_header().uri.path().to_string();
 
-        // TODO: normal metrics handler.
-        // as well as normal metrics gathering.
         if uri == "/metrics" {
             tracing::info!("Requesting metrics endpoint: {}", uri);
             // Process metrics request internally.
@@ -79,10 +77,11 @@ impl ProxyHttp for Proxy {
                 ctx.req_id.to_string(),
                 &upstream.addr
             );
-
+            // TODO: decide whether to use TLS based on upstream properties.
+            // Maybe add a boolean parameter to context based on request properties.
+            //
             // Create a peer from the selected upstream.
             // httppeer::new() takes (upstream, use_tls, server_name (SNI))
-            // TODO: figure out tls usage.
             let peer = Box::new(HttpPeer::new(upstream, false, HOST_HEADER_NAME.to_string()));
 
             Ok(peer)
@@ -123,41 +122,21 @@ impl ProxyHttp for Proxy {
     async fn logging(&self, _session: &mut Session, e: Option<&Error>, ctx: &mut Self::CTX) {
         if let Some(err) = e {
             tracing::error!("Error processing request {}: {}", ctx.req_id, err);
+            metrics::ERROR_COUNTER.inc();
         } else {
             tracing::info!("Successfully processed request {}", ctx.req_id);
         }
-        metrics::HIGH_FIVE_COUNTER.inc();
+        metrics::TOTAL_REQUESTS_COUNTER.inc();
     }
 }
 
 impl Proxy {
     // Constructor for the proxy service.
-    pub fn new_proxy_service(config: Arc<configuration::ServerConf>) -> impl Service {
-        //TODO: переписать конструктор на from_backends() и распарсить бекенды вместе с весами
-        // Структура ниже:
-        // pub struct Backend {
-        //     /// The address to the backend server.
-        //     pub addr: SocketAddr,
-        //     /// The relative weight of the server. Load balancing algorithms will
-        //     /// proportionally distributed traffic according to this value.
-        //     pub weight: usize,
-        //
-        //     /// The extension field to put arbitrary data to annotate the Backend.
-        //     /// The data added here is opaque to this crate hence the data is ignored by
-        //     /// functionalities of this crate. For example, two backends with the same
-        //     /// [SocketAddr] and the same weight but different `ext` data are considered
-        //     /// identical.
-        //     /// See [Extensions] for how to add and read the data.
-        //     #[derivative(PartialEq = "ignore")]
-        //     #[derivative(PartialOrd = "ignore")]
-        //     #[derivative(Hash = "ignore")]
-        //     #[derivative(Ord = "ignore")]
-        //     pub ext: Extensions,
-        // }
-
+    pub fn new_proxy_service(
+        config: Arc<configuration::ServerConf>,
+        proxy_config: config::ProxyConfig,
+    ) -> impl Service {
         // Parsing proxy configuration from environment variables, config files, etc
-        let proxy_config = config::ProxyConfig::new();
-
         // Parse upstreams from somewhere (potentially database or static config)
         let mut balancer_upstreams =
             pingora_load_balancing::LoadBalancer::try_from_iter(["127.0.0.1:8080"]).unwrap();
@@ -172,7 +151,7 @@ impl Proxy {
 
         let mut balancer = http_proxy_service(&config, Proxy(upstreams));
         // Add a TCP listening endpoint with the given address (e.g., `127.0.0.1:8000`).
-        balancer.add_tcp(&proxy_config.listen_addr.as_str());
+        balancer.add_tcp(proxy_config.listen_addr.as_str());
 
         balancer
     }
