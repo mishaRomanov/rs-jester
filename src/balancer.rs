@@ -2,7 +2,7 @@ use crate::{config, metrics};
 use async_trait::async_trait;
 use bytes::Bytes;
 use pingora::{
-    http::{self, ResponseHeader},
+    http::{ResponseHeader, StatusCode},
     server::configuration,
     services::{background::background_service, Service},
     upstreams::peer::HttpPeer,
@@ -158,7 +158,7 @@ impl Proxy {
 
     // Endpoint responsible for /metrics handling.
     async fn handle_metrics_request(&self, session: &mut Session) -> Result<bool> {
-        let mut resp = ResponseHeader::build(http::StatusCode::OK, None)?;
+        let mut resp = ResponseHeader::build(StatusCode::OK, None)?;
         resp.insert_header("Content-Type", prometheus::TEXT_FORMAT)?;
 
         let metric_families = prometheus::gather();
