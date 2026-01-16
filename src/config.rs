@@ -1,5 +1,5 @@
-use log::info;
 use std::env;
+use tracing;
 
 #[derive(Clone, Debug)]
 pub struct AppConfig {
@@ -49,7 +49,7 @@ impl TasksConfig {
                 interval_minutes: value.parse().unwrap(),
             },
             Err(_) => {
-                info!(
+                tracing::info!(
                     "Using default task interval: {} minutes",
                     DEFAULT_TASK_INTERVAL_MINUTES
                 );
