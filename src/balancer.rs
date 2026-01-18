@@ -138,22 +138,22 @@ impl Proxy {
     ) -> impl Service {
         // Parsing proxy configuration from environment variables, config files, etc
         // Parse upstreams from somewhere (potentially database or static config)
-        let mut balancer_upstreams =
+        let mut balancer =
             pingora_load_balancing::LoadBalancer::try_from_iter(["127.0.0.1:8080"]).unwrap();
 
         let hc = pingora_load_balancing::health_check::TcpHealthCheck::new();
-        balancer_upstreams.set_health_check(hc);
-        balancer_upstreams.health_check_frequency = Some(time::Duration::from_secs(1));
+        balancer.set_health_check(hc);
+        balancer.health_check_frequency = Some(time::Duration::from_secs(1));
 
-        let background = background_service("healthcheck", balancer_upstreams);
+        let background = background_service("healthcheck", balancer);
         // background.task() returns upstreams back.
-        let upstreams = background.task();
+        let balancer = background.task();
 
-        let mut balancer = http_proxy_service(&config, Proxy(upstreams));
+        let mut proxy = http_proxy_service(&config, Proxy(balancer));
         // Add a TCP listening endpoint with the given address (e.g., `127.0.0.1:8000`).
-        balancer.add_tcp(proxy_config.listen_addr.as_str());
+        proxy.add_tcp(proxy_config.listen_addr.as_str());
 
-        balancer
+        proxy
     }
 
     // Endpoint responsible for /metrics handling.
